@@ -4,18 +4,18 @@ import org.bukkit.plugin.java.JavaPlugin;
 public final class CyansSimpleRaiding extends JavaPlugin {
 
     // Assume your BlockHealthListener class is here
-    private final BlockHealthListener BlockHealthListener = new BlockHealthListener();
+    private final BlockHealthListener blockHealthListener = new BlockHealthListener();
 
     @Override
     public void onEnable() {
-        BlockHealthListener.setDataFolder(getDataFolder());
-        BlockHealthListener.loadBlockData();
-        getServer().getPluginManager().registerEvents(BlockHealthListener, this);
+        blockHealthListener.setDataFolder(getDataFolder());
+        blockHealthListener.loadBlockData();
+        getServer().getPluginManager().registerEvents(blockHealthListener, this);
 
 
-        this.getCommand("trust").setExecutor(new BlockTrustCommand(BlockHealthListener));
-        this.getCommand("untrust").setExecutor(new BlockTrustCommand(BlockHealthListener));
-        this.getCommand("csradmin").setExecutor(new CsrAdminCommand(BlockHealthListener));
+        this.getCommand("trust").setExecutor(new BlockTrustCommand(blockHealthListener));
+        this.getCommand("untrust").setExecutor(new BlockTrustCommand(blockHealthListener));
+        this.getCommand("csradmin").setExecutor(new CsrAdminCommand(blockHealthListener));
 
         getLogger().info("CSR Enabled");
     }
@@ -23,7 +23,7 @@ public final class CyansSimpleRaiding extends JavaPlugin {
     @Override
     public void onDisable() {
         // Save your data
-        BlockHealthListener.saveBlockData();
+        blockHealthListener.saveBlockData();
 
         getLogger().info("CSR Shutting down...");
     }
