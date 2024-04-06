@@ -582,7 +582,6 @@ public class BlockHealthListener implements Listener {
         }
     }
 
-
     public void toggleCsrAdmin(Player player) {
         UUID playerUuid = player.getUniqueId();
         if (adminOverrides.contains(playerUuid)) {

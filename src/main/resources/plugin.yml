@@ -2,3 +2,14 @@ name: CyansSimpleRaiding
 version: '1.0'
 main: cyansraiding.cyanssimpleraiding.CyansSimpleRaiding
 api-version: '1.20'
+
+commands:
+  trust:
+    description: Trust a player globally.
+    usage: /trust <player >
+  untrust:
+    description: Untrust a player globally.
+    usage: /untrust <player>
+  csradmin:
+    description: Toggle CSR admin mode.
+    usage: /csradmin
