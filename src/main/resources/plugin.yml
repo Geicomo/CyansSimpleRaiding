@@ -1,0 +1,4 @@
+name: CyansSimpleRaiding
+version: '1.0'
+main: cyansraiding.cyanssimpleraiding.CyansSimpleRaiding
+api-version: '1.20'

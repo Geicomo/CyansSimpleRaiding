@@ -1,0 +1,596 @@
+package cyansraiding.cyanssimpleraiding;
+
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.block.*;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.inventory.InventoryMoveItemEvent;
+import org.bukkit.event.inventory.InventoryOpenEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.inventory.EquipmentSlot;
+import org.bukkit.inventory.ItemStack;
+import java.io.File;
+import java.io.IOException;
+import java.util.*;
+import java.util.stream.Collectors;
+import org.bukkit.Location;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
+import static org.bukkit.Bukkit.getLogger;
+
+public class BlockHealthListener implements Listener {
+    private final Map<String, Double> blockHealth = new HashMap<>();
+    private final Map<String, UUID> blockOwners = new HashMap<>();
+    private final Set<UUID> adminOverrides = new HashSet<>();
+    private final Map<String, Long> blockBreakTimes = new HashMap<>();
+    private final Map<UUID, ItemStack[]> blockContentsBefore = new HashMap<>();
+    private final Map<String, UUID> lastPlayerToLowerHealth = new HashMap<>();
+    private final Map<String, UUID> lastPlayerToOpen = new HashMap<>();
+    private final Map<String, List<UUID>> blockTrustedPlayers = new HashMap<>(); // Added: Trusted players mapping
+    private File dataFolder;
+
+    public void setDataFolder(File dataFolder) {
+        this.dataFolder = dataFolder;
+    }
+
+    public void loadBlockData() {
+        if (dataFolder == null) return; // Make sure dataFolder has been set
+
+        File dataFile = new File(dataFolder, "blockData.yml");
+        if (!dataFile.exists()) {
+            getLogger().info("[CyansSimpleRaiding] Block data file does not exist. Skipping...");
+            return;
+        }
+
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(dataFile);
+        ConfigurationSection blocksSection = config.getConfigurationSection("blocks");
+        if (blocksSection == null) {
+            getLogger().info("[CyansSimpleRaiding] No data to read, if there is no chests in the world this is normal. Skipping...");
+            return;
+        }
+
+        blockOwners.clear();
+        blockHealth.clear();
+        lastPlayerToLowerHealth.clear();
+        lastPlayerToOpen.clear();
+        blockTrustedPlayers.clear();
+
+        for (String key : blocksSection.getKeys(false)) {
+            ConfigurationSection blockSection = blocksSection.getConfigurationSection(key);
+            if (blockSection == null) continue;
+
+            // Owner
+            String ownerStr = blockSection.getString("owner");
+            if (ownerStr != null) {
+                UUID ownerUUID = UUID.fromString(ownerStr);
+                blockOwners.put(key, ownerUUID);
+            }
+
+            // Health
+            double health = blockSection.getDouble("health", -1.0); // Use a default value that indicates "not set"
+            if (health != -1.0) {
+                blockHealth.put(key, health);
+            }
+
+            // Last player to lower health
+            String lastToLowerHealthStr = blockSection.getString("lastToLowerHealth");
+            if (lastToLowerHealthStr != null) {
+                UUID lastToLowerHealthUUID = UUID.fromString(lastToLowerHealthStr);
+                lastPlayerToLowerHealth.put(key, lastToLowerHealthUUID);
+            }
+
+            // Last player to open
+            String lastToOpenStr = blockSection.getString("lastToOpen");
+            if (lastToOpenStr != null) {
+                UUID lastToOpenUUID = UUID.fromString(lastToOpenStr);
+                lastPlayerToOpen.put(key, lastToOpenUUID);
+            }
+
+            // Trusted players
+            List<String> trustedPlayersStr = blockSection.getStringList("trustedPlayers");
+            if (!trustedPlayersStr.isEmpty()) {
+                List<UUID> trustedPlayersUUID = new ArrayList<>();
+                for (String uuidStr : trustedPlayersStr) {
+                    trustedPlayersUUID.add(UUID.fromString(uuidStr));
+                }
+                blockTrustedPlayers.put(key, trustedPlayersUUID);
+            }
+        }
+        getLogger().info("[CyansSimpleRaiding] Successfully loaded all block data.");
+    }
+
+    private String locationKey(Location location) {
+        return Objects.requireNonNull(location.getWorld()).getName() + "," + location.getBlockX() + "," + location.getBlockY() + "," + location.getBlockZ();
+    }
+
+    @EventHandler
+    public void onEntityExplode(EntityExplodeEvent event) {
+        // Use a new ArrayList to avoid ConcurrentModificationException
+        List<Block> blocksToRemove = new ArrayList<>();
+        for (Block block : event.blockList()) {
+            String locKey = locationKey(block.getLocation());
+            if (block.getState() instanceof Container && blockHealth.containsKey(locKey)) {
+                blocksToRemove.add(block);
+            }
+        }
+        // Remove all identified chest blocks from the event's block list
+        event.blockList().removeAll(blocksToRemove);
+    }
+
+    @EventHandler
+    public void onBlockExplode(BlockExplodeEvent event) {
+        List<Block> blocksToRemove = new ArrayList<>();
+        for (Block block : event.blockList()) {
+            String locKey = locationKey(block.getLocation());
+            if (block.getState() instanceof Container && blockHealth.containsKey(locKey)) {
+                blocksToRemove.add(block);
+            }
+        }
+        event.blockList().removeAll(blocksToRemove);
+    }
+
+    @EventHandler
+    public void onBlockPlace(BlockPlaceEvent event) {
+        Block block = event.getBlockPlaced();
+        if (block.getState() instanceof Container) {
+            // The block is a container, so we proceed with protection
+            Container container = (Container) block.getState();
+
+            // Perform your logic for container protection here
+            String blockLocKey = locationKey(container.getLocation());
+
+            // Assuming all containers start with a default "health" value
+            blockHealth.put(blockLocKey, 100.0);
+            blockOwners.put(blockLocKey, event.getPlayer().getUniqueId());
+        }
+    }
+
+    public void saveBlockData() {
+        if (dataFolder == null) return; // Make sure dataFolder has been set
+
+        File dataFile = new File(dataFolder, "blockData.yml");
+        YamlConfiguration config = new YamlConfiguration();
+
+        for (Map.Entry<String, UUID> entry : blockOwners.entrySet()) {
+            String basePath = "blocks." + entry.getKey() + ".";
+
+            // Save the owner's UUID as a string
+            config.set(basePath + "owner", entry.getValue().toString());
+
+            // Save the block health
+            Double health = blockHealth.get(entry.getKey());
+            if (health != null) {
+                config.set(basePath + "health", health);
+            }
+
+            // Save the last player to lower health
+            UUID lastLower = lastPlayerToLowerHealth.get(entry.getKey());
+            if (lastLower != null) {
+                config.set(basePath + "lastToLowerHealth", lastLower.toString());
+            }
+
+            // Save the last player to open
+            UUID lastOpen = lastPlayerToOpen.get(entry.getKey());
+            if (lastOpen != null) {
+                config.set(basePath + "lastToOpen", lastOpen.toString());
+            }
+
+            // Save the list of trusted players
+            List<UUID> trusted = blockTrustedPlayers.get(entry.getKey());
+            if (trusted != null && !trusted.isEmpty()) {
+                List<String> trustedStrings = trusted.stream().map(UUID::toString).collect(Collectors.toList());
+                config.set(basePath + "trustedPlayers", trustedStrings);
+            }
+        }
+
+        try {
+            config.save(dataFile);
+            getLogger().info("[CyansSimpleRaiding] Successfully saved block data of containers.");
+        } catch (IOException e) {
+            // Replace printStackTrace with logging
+            getLogger().severe("[CyansSimpleRaiding] Could not save block data to blockData.yml!");
+            getLogger().severe(e.toString()); // Log the exception message
+        }
+    }
+
+    @EventHandler
+    public void onInventoryOpen(InventoryOpenEvent event) {
+        if (!(event.getPlayer() instanceof Player)) return; // Ensure the event invoker is a player
+        Player player = (Player) event.getPlayer();
+        UUID playerUUID = player.getUniqueId(); // Get the player's UUID
+
+        InventoryHolder holder = event.getInventory().getHolder();
+
+        if (holder instanceof Container) {
+            // Handling for single Container
+            handleSingleContainer(event, (Container) holder, playerUUID);
+        }
+    }
+
+    private void handleSingleContainer(InventoryOpenEvent event, Container container, UUID playerUUID) {
+        String locKey = locationKey(container.getLocation());
+
+        processContainerAccess(event, locKey, playerUUID);
+    }
+
+    private void processContainerAccess(InventoryOpenEvent event, String locKey, UUID playerUUID) {
+        // Capture and store the container inventory contents before any potential changes
+        blockContentsBefore.put(playerUUID, event.getInventory().getContents().clone());
+
+        if (adminOverrides.contains(playerUUID)) {
+            return; // Admin override allows immediate access
+        }
+
+        UUID ownerId = blockOwners.get(locKey);
+        List<UUID> trustedPlayers = blockTrustedPlayers.getOrDefault(locKey, new ArrayList<>());
+        if (ownerId == null || (!ownerId.equals(playerUUID) && !trustedPlayers.contains(playerUUID))) {
+            event.getPlayer().sendMessage("[§9§lCSR§r§f] You are not trusted or don't own this container.");
+            event.setCancelled(true);
+        }
+
+        if (isBlockOnCooldown(locKey, playerUUID)) {
+            event.setCancelled(true);
+        }
+
+        lastPlayerToOpen.put(locKey, playerUUID);
+    }
+
+    public boolean isBlockOnCooldown(String locKey, UUID playerUUID) {
+        Long breakTime = blockBreakTimes.get(locKey);
+        if (breakTime == null) {
+            return false; // No cooldown recorded, chest can be opened
+        }
+        long currentTime = System.currentTimeMillis();
+        long timeSinceBreak = currentTime - breakTime;
+        long cooldownDuration = 40000; // 40 seconds cooldown
+        if (timeSinceBreak < cooldownDuration) {
+            Player player = Bukkit.getPlayer(playerUUID); // Retrieve the player from UUID
+            long timeLeft = (cooldownDuration - timeSinceBreak) / 1000; // Convert to seconds
+            assert player != null;
+            player.sendMessage("[§9§lCSR§r§f] This container is being§c raided!§r " + timeLeft + " seconds.");
+            return true;
+        } else {
+            blockBreakTimes.remove(locKey); // Cooldown expired, remove entry
+            return false;
+        }
+    }
+
+    @EventHandler
+    public void onInventoryClose(InventoryCloseEvent event) {
+        if (!(event.getPlayer() instanceof Player)) return;
+        InventoryHolder holder = event.getInventory().getHolder();
+
+        Player player = (Player) event.getPlayer();
+        UUID playerUUID = player.getUniqueId();
+        ItemStack[] contentsBefore = blockContentsBefore.getOrDefault(playerUUID, new ItemStack[0]);
+        ItemStack[] contentsAfter = event.getInventory().getContents();
+
+        boolean hasChanged = !Arrays.equals(contentsBefore, contentsAfter);
+
+        if (!(holder instanceof BlockState)) {
+            return;
+        }
+
+        if (hasChanged) {
+            Container container = (Container) holder;
+            String locKey = locationKey(container.getLocation());
+            updateBlockHealthAndNotifyPlayer(container, player, locKey);
+        }
+
+        blockContentsBefore.remove(playerUUID);
+    }
+
+    @EventHandler
+    public void onInventoryMoveItem(InventoryMoveItemEvent event) {
+        InventoryHolder sourceHolder = event.getSource().getHolder();
+        InventoryHolder destinationHolder = event.getDestination().getHolder();
+
+        if (sourceHolder instanceof Container && destinationHolder instanceof Hopper) {
+            // Item being pulled from a container into a hopper
+            handleHopperInteraction((Container) sourceHolder, (Hopper) destinationHolder, event);
+        } else if (sourceHolder instanceof Hopper && destinationHolder instanceof Container) {
+            // Item being pushed from a hopper into a container
+            handleHopperInteraction((Container) destinationHolder, (Hopper) sourceHolder, event);
+        }
+    }
+
+    private void handleHopperInteraction(Container container, Hopper hopper, InventoryMoveItemEvent event) {
+        Block containerBlock = container.getBlock();
+        Block hopperBlock = hopper.getBlock();
+        String containerLocKey = locationKey(containerBlock.getLocation());
+        String hopperLocKey = locationKey(hopperBlock.getLocation());
+
+        UUID containerOwner = blockOwners.get(containerLocKey);
+        UUID hopperOwner = blockOwners.get(hopperLocKey);
+
+        // If either the container or the hopper doesn't have an owner, or their owners are different, cancel the event
+        if (containerOwner == null || !containerOwner.equals(hopperOwner)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler
+    public void onBlockBreak(BlockBreakEvent event) {
+        Block block = event.getBlock();
+        if (!(block.getState() instanceof Container)) return;
+
+        Player player = event.getPlayer();
+        String locKey = locationKey(block.getLocation());
+
+        if (adminOverrides.contains(player.getUniqueId())) {
+            // Your existing logic for handling admin overrides
+            return;
+        }
+
+        UUID ownerId = blockOwners.get(locKey);
+        List<UUID> trustedPlayers = blockTrustedPlayers.getOrDefault(locKey, new ArrayList<>());
+
+        if (ownerId == null) {
+            return; // Exit to avoid NullPointerException
+        }
+
+        if (ownerId.equals(player.getUniqueId()) || trustedPlayers.contains(player.getUniqueId())) {
+            removeBlockProtectionData(locKey);
+            return;
+        }
+        double currentHealth = blockHealth.getOrDefault(locKey, 100.0);
+        double newHealth = currentHealth - 20;
+
+        if (blockHealth.containsKey(locKey)) {
+
+            if (newHealth > 0) {
+                blockHealth.put(locKey, newHealth);
+                lastPlayerToLowerHealth.put(locKey, player.getUniqueId());
+                blockBreakTimes.put(locKey, System.currentTimeMillis());
+                handleBlockHealthReduction(locKey, player, currentHealth);
+
+                event.setCancelled(true); // Prevent the chest from actually breaking
+            } else {
+                removeBlockProtectionData(locKey);
+            }
+        }
+    }
+
+    // Additional helper methods to encapsulate logic
+    private void removeBlockProtectionData(String locKey) {
+        blockHealth.remove(locKey);
+        blockOwners.remove(locKey);
+        blockTrustedPlayers.remove(locKey); // Ensure trusted players are also cleared
+        lastPlayerToLowerHealth.remove(locKey);
+        blockBreakTimes.remove(locKey);
+    }
+
+    private void handleBlockHealthReduction(String locKey, Player player, double currentHealth) {
+        double newHealth = currentHealth - 20; // Adjust as needed
+
+        if (newHealth > 0) {
+            blockHealth.put(locKey, newHealth);
+            // Update other related mappings as necessary
+            lastPlayerToLowerHealth.put(locKey, player.getUniqueId());
+            blockBreakTimes.put(locKey, System.currentTimeMillis());
+            player.sendMessage(String.format("[§9§lCSR§r§f] Container now has §a%.2f%%§r health left.", newHealth));
+        } else {
+            removeBlockProtectionData(locKey);
+        }
+    }
+
+    private void updateBlockHealthAndNotifyPlayer(Container container, Player player, String locKey) {
+        if (blockHealth.containsKey(locKey)) {
+            double healthIncrease = calculateBlockHealthBasedOnContents(container.getBlock());
+            double newTotalHealth = 100.0 + healthIncrease;
+            blockHealth.put(locKey, newTotalHealth);
+            player.sendMessage(String.format("[§9§lCSR§r§f] New container health: §a%.2f%%.", newTotalHealth));
+        }
+    }
+
+    private double calculateBlockHealthBasedOnContents(Block containerBlock) {
+        double healthIncrease = 0.0;
+        if (containerBlock.getState() instanceof Container) {
+            Container container = (Container) containerBlock.getState();
+            for (ItemStack item : container.getInventory().getContents()) {
+                if (item != null) {
+                    healthIncrease += getIncreaseModifier(item.getType()) * item.getAmount();
+                }
+            }
+        }
+        return healthIncrease;
+    }
+
+    private double getIncreaseModifier(Material material) {
+        switch (material) {
+            //Netherite
+            case NETHERITE_HELMET:
+            case NETHERITE_CHESTPLATE:
+            case NETHERITE_LEGGINGS:
+            case NETHERITE_BOOTS:
+            case NETHERITE_BLOCK:
+                return 25.0;
+            case NETHERITE_SWORD:
+            case NETHERITE_AXE:
+            case NETHERITE_SHOVEL:
+            case NETHERITE_PICKAXE:
+            case NETHERITE_HOE:
+                //Diamond Block
+            case DIAMOND_BLOCK:
+                return 20.0;
+            //Netherite
+            case NETHERITE_INGOT:
+                return 15.0;
+            case NETHERITE_SCRAP:
+                return 12.0;
+            //Diamond
+            case DIAMOND_HELMET:
+            case DIAMOND_CHESTPLATE:
+            case DIAMOND_LEGGINGS:
+            case DIAMOND_SWORD:
+            case DIAMOND_AXE:
+            case DIAMOND_SHOVEL:
+            case DIAMOND_PICKAXE:
+                return 15.0;
+            case DIAMOND_BOOTS:
+            case DIAMOND_HOE:
+                return 12.0;
+            case DIAMOND:
+                //Copper Block
+            case COPPER_BLOCK:
+                return 10.0;
+            //Iron
+            case IRON_HELMET:
+            case IRON_CHESTPLATE:
+            case IRON_LEGGINGS:
+            case IRON_PICKAXE:
+            case IRON_AXE:
+            case IRON_SHOVEL:
+            case IRON_SWORD:
+            case IRON_BLOCK:
+                return 10.0;
+            case IRON_HOE:
+            case IRON_BOOTS:
+                return 8.0;
+            case IRON_INGOT:
+            case RAW_IRON:
+                //Copper
+            case COPPER_ORE:
+            case RAW_COPPER:
+                return 5.0;
+            //Gold
+            case GOLDEN_AXE: //Fastest axe to break chests
+                return 8.0;
+            case GOLDEN_HELMET:
+            case GOLDEN_CHESTPLATE:
+            case GOLDEN_LEGGINGS:
+            case GOLDEN_BOOTS:
+            case GOLDEN_SWORD:
+            case GOLDEN_PICKAXE:
+            case GOLDEN_HOE:
+            case GOLDEN_SHOVEL:
+                return 5.0;
+            case GOLD_INGOT:
+                return 2.0;
+            //Other Resources
+            case COBBLESTONE:
+            case DIRT:
+                return 0.01;
+            //Misc
+            case ELYTRA:
+                return 25.0;
+            case SHULKER_BOX:
+                return 15.0;
+            case EMERALD:
+                return 5.0;
+            case GOLDEN_APPLE:
+                return 6.0;
+            case ENDER_EYE:
+            case BOOK:
+                return 4.0;
+            case LEATHER:
+                return 1.0;
+            default:
+                return 0.0;
+        }
+    }
+
+    @EventHandler
+    public void onPlayerInteractWithChest(PlayerInteractEvent event) {
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK || event.getHand() != EquipmentSlot.HAND) return;
+
+        Player player = event.getPlayer();
+        if (player.getInventory().getItemInMainHand().getType() != Material.CHEST) return;
+
+        Block block = event.getClickedBlock();
+        if (block == null || !(block.getState() instanceof Container)) return;
+
+        event.setCancelled(true);
+
+        String locKey = locationKey(block.getLocation());
+        Double health = blockHealth.getOrDefault(locKey, 100.0);
+        UUID ownerId = blockOwners.get(locKey);
+        UUID lastDamageCauserId = lastPlayerToLowerHealth.get(locKey);
+        UUID lastOpenId = lastPlayerToOpen.get(locKey);
+
+        String ownerName = ownerId != null ? Bukkit.getOfflinePlayer(ownerId).getName() : "Unknown";
+        String lastDamageCauserName = lastDamageCauserId != null ? Bukkit.getOfflinePlayer(lastDamageCauserId).getName() : "None";
+        String lastOpenName = lastOpenId != null ? Bukkit.getOfflinePlayer(lastOpenId).getName() : "None";
+
+        player.sendMessage("[§9§lCSR§r§f] §lContainer Info:");
+        player.sendMessage("§lHealth:§r§a " + health +"%");
+        player.sendMessage("§lOwner:§r " + ownerName);
+        player.sendMessage("§lLast Player to Break:§r " + lastDamageCauserName);
+        player.sendMessage("§lLast Player to Open:§r " + lastOpenName);
+
+        // Check if the player is the owner, then display the trusted list
+        if (ownerId != null && ownerId.equals(player.getUniqueId())) {
+            List<UUID> trustedPlayers = blockTrustedPlayers.getOrDefault(locKey, Collections.emptyList());
+            if (!trustedPlayers.isEmpty()) {
+                StringBuilder trustedNames = new StringBuilder();
+                for (UUID trustedPlayerUUID : trustedPlayers) {
+                    // Attempt to get the name of each trusted player
+                    String trustedPlayerName = Bukkit.getOfflinePlayer(trustedPlayerUUID).getName();
+                    if (trustedNames.length() > 0) trustedNames.append(", ");
+                    trustedNames.append(trustedPlayerName);
+                }
+                player.sendMessage("§lTrusted Players:§r " + trustedNames);
+            } else {
+                player.sendMessage("§lTrusted Players:§r None");
+            }
+        }
+    }
+
+
+    public void addPlayerToBlockTrustList(Player owner, UUID trustedPlayerUUID, Block chestBlock) {
+        String locKey = locationKey(chestBlock.getLocation());
+        UUID ownerId = blockOwners.get(locKey);
+
+        if (ownerId != null && ownerId.equals(owner.getUniqueId())) {
+            List<UUID> trustedPlayers = blockTrustedPlayers.getOrDefault(locKey, new ArrayList<>());
+            if (!trustedPlayers.contains(trustedPlayerUUID)) {
+                trustedPlayers.add(trustedPlayerUUID);
+                blockTrustedPlayers.put(locKey, trustedPlayers);
+                owner.sendMessage("[§9§lCSR§r§f] Player trusted with the container.");
+            } else {
+                owner.sendMessage("[§9§lCSR§r§f] Player is already trusted with this container.");
+            }
+        } else {
+            owner.sendMessage("[§9§lCSR§r§f] You are not the owner of this container.");
+        }
+    }
+
+    public void removePlayerFromBlockTrustList(Player owner, UUID untrustedPlayerUUID, Block chestBlock) {
+        String locKey = locationKey(chestBlock.getLocation());
+        UUID ownerId = blockOwners.get(locKey);
+
+        if (ownerId != null && ownerId.equals(owner.getUniqueId())) {
+            List<UUID> trustedPlayers = blockTrustedPlayers.getOrDefault(locKey, new ArrayList<>());
+            if (trustedPlayers.contains(untrustedPlayerUUID)) {
+                trustedPlayers.remove(untrustedPlayerUUID);
+                blockTrustedPlayers.put(locKey, trustedPlayers);
+                owner.sendMessage("[§9§lCSR§r§f] Player removed from the trusted list.");
+            } else {
+                owner.sendMessage("[§9§lCSR§r§f] Player was not trusted with this chest.");
+            }
+        } else {
+            owner.sendMessage("[§9§lCSR§r§f]§c You are not the owner of this chest.");
+        }
+    }
+
+
+    public void toggleCsrAdmin(Player player) {
+        UUID playerUuid = player.getUniqueId();
+        if (adminOverrides.contains(playerUuid)) {
+            adminOverrides.remove(playerUuid);
+            player.sendMessage("[§9§lCSR§r§c§lA§r§f] Admin mode disabled.");
+        } else {
+            adminOverrides.add(playerUuid);
+            player.sendMessage("[§9§lCSR§r§c§lA§r§f] Admin mode enabled.");
+        }
+    }
+}
