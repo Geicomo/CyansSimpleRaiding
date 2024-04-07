@@ -2,6 +2,7 @@ package cyansraiding.cyanssimpleraiding;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.*;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -35,7 +36,6 @@ public class BlockHealthListener implements Listener {
     private final Map<UUID, ItemStack[]> blockContentsBefore = new HashMap<>();
     private final Map<String, UUID> lastPlayerToLowerHealth = new HashMap<>();
     private final Map<String, UUID> lastPlayerToOpen = new HashMap<>();
-    private final Map<String, List<UUID>> blockTrustedPlayers = new HashMap<>(); // Added: Trusted players mapping
     private final Map<UUID, List<UUID>> ownerTrustRelationships = new HashMap<>();
     private File dataFolder;
     private String locationKey(Location location) {
@@ -91,7 +91,6 @@ public class BlockHealthListener implements Listener {
             blockHealth.clear();
             lastPlayerToLowerHealth.clear();
             lastPlayerToOpen.clear();
-            blockTrustedPlayers.clear();
             ownerTrustRelationships.clear();
 
             for (String key : blocksSection.getKeys(false)) {
@@ -123,16 +122,6 @@ public class BlockHealthListener implements Listener {
                     UUID lastToOpenUUID = UUID.fromString(lastToOpenStr);
                     lastPlayerToOpen.put(key, lastToOpenUUID);
                 }
-
-                // Trusted players
-                List<String> trustedPlayersStr = blockSection.getStringList("trustedPlayers");
-                if (!trustedPlayersStr.isEmpty()) {
-                    List<UUID> trustedPlayersUUID = new ArrayList<>();
-                    for (String uuidStr : trustedPlayersStr) {
-                        trustedPlayersUUID.add(UUID.fromString(uuidStr));
-                    }
-                    blockTrustedPlayers.put(key, trustedPlayersUUID);
-                }
             }
         } else {
             getLogger().info("[CyansSimpleRaiding] No blocks data to read. Skipping...");
@@ -160,6 +149,28 @@ public class BlockHealthListener implements Listener {
         getLogger().info("[CyansSimpleRaiding] Successfully loaded all data.");
     }
 
+    private Location parseLocationKey(String locKey) {
+        String[] parts = locKey.split(",");
+        if (parts.length != 4) {
+            getLogger().warning("[CyansSimpleRaiding] Invalid location format: " + locKey);
+            return null;
+        }
+        World world = Bukkit.getWorld(parts[0]);
+        if (world == null) {
+            getLogger().warning("[CyansSimpleRaiding] World not found: " + parts[0]);
+            return null;
+        }
+        try {
+            int x = Integer.parseInt(parts[1]);
+            int y = Integer.parseInt(parts[2]);
+            int z = Integer.parseInt(parts[3]);
+            return new Location(world, x, y, z);
+        } catch (NumberFormatException e) {
+            getLogger().warning("[CyansSimpleRaiding] Number format exception for location: " + locKey);
+            return null;
+        }
+    }
+
     public void saveBlockData() {
         if (dataFolder == null) return; // Make sure dataFolder has been set
 
@@ -167,47 +178,42 @@ public class BlockHealthListener implements Listener {
         YamlConfiguration config = new YamlConfiguration();
 
         for (Map.Entry<String, UUID> entry : blockOwners.entrySet()) {
-            String basePath = "blocks." + entry.getKey() + ".";
+            String locKey = entry.getKey();
+            Location loc = parseLocationKey(locKey);
+            if (loc != null) {
+                Block block = loc.getBlock();
+                if (block.getState() instanceof Container) {
+                    String basePath = "blocks." + locKey + ".";
+                    config.set(basePath + "owner", entry.getValue().toString());
 
-            // Save the owner's UUID as a string
-            config.set(basePath + "owner", entry.getValue().toString());
+                    Double health = blockHealth.get(locKey);
+                    if (health != null) {
+                        config.set(basePath + "health", health);
+                    }
 
-            // Save the block health
-            Double health = blockHealth.get(entry.getKey());
-            if (health != null) {
-                config.set(basePath + "health", health);
-            }
+                    // Save the last player to lower health
+                    UUID lastLower = lastPlayerToLowerHealth.get(entry.getKey());
+                    if (lastLower != null) {
+                        config.set(basePath + "lastToLowerHealth", lastLower.toString());
+                    }
 
-            // Save the last player to lower health
-            UUID lastLower = lastPlayerToLowerHealth.get(entry.getKey());
-            if (lastLower != null) {
-                config.set(basePath + "lastToLowerHealth", lastLower.toString());
-            }
-
-            // Save the last player to open
-            UUID lastOpen = lastPlayerToOpen.get(entry.getKey());
-            if (lastOpen != null) {
-                config.set(basePath + "lastToOpen", lastOpen.toString());
-            }
-
-            // Save the list of trusted players
-            List<UUID> trusted = blockTrustedPlayers.get(entry.getKey());
-            if (trusted != null && !trusted.isEmpty()) {
-                List<String> trustedStrings = trusted.stream().map(UUID::toString).collect(Collectors.toList());
-                config.set(basePath + "trustedPlayers", trustedStrings);
+                    // Save the last player to open
+                    UUID lastOpen = lastPlayerToOpen.get(entry.getKey());
+                    if (lastOpen != null) {
+                        config.set(basePath + "lastToOpen", lastOpen.toString());
+                    }
+                }
             }
         }
 
         if (!ownerTrustRelationships.isEmpty()) {
             for (Map.Entry<UUID, List<UUID>> entry : ownerTrustRelationships.entrySet()) {
-                // Convert the list of UUIDs to a list of strings
                 List<String> trustedPlayerStrings = entry.getValue().stream()
                         .map(UUID::toString)
                         .collect(Collectors.toList());
                 config.set("ownerTrustRelationships." + entry.getKey().toString(), trustedPlayerStrings);
             }
         }
-
         try {
             config.save(dataFile);
             getLogger().info("[CyansSimpleRaiding] Successfully saved block data of containers.");
@@ -374,11 +380,12 @@ public class BlockHealthListener implements Listener {
         }
 
         UUID ownerId = blockOwners.get(locKey);
-        List<UUID> trustedPlayers = blockTrustedPlayers.getOrDefault(locKey, new ArrayList<>());
 
         if (ownerId == null) {
             return; // Exit to avoid NullPointerException
         }
+
+        List<UUID> trustedPlayers = ownerTrustRelationships.getOrDefault(ownerId, new ArrayList<>());
 
         if (ownerId.equals(player.getUniqueId()) || trustedPlayers.contains(player.getUniqueId())) {
             removeBlockProtectionData(locKey);
@@ -402,15 +409,6 @@ public class BlockHealthListener implements Listener {
         }
     }
 
-    // Additional helper methods to encapsulate logic
-    private void removeBlockProtectionData(String locKey) {
-        blockHealth.remove(locKey);
-        blockOwners.remove(locKey);
-        blockTrustedPlayers.remove(locKey); // Ensure trusted players are also cleared
-        lastPlayerToLowerHealth.remove(locKey);
-        blockBreakTimes.remove(locKey);
-    }
-
     private void handleBlockHealthReduction(String locKey, Player player, double currentHealth) {
         double newHealth = currentHealth - 20; // Adjust as needed
 
@@ -423,6 +421,14 @@ public class BlockHealthListener implements Listener {
         } else {
             removeBlockProtectionData(locKey);
         }
+    }
+
+    private void removeBlockProtectionData(String locKey) {
+        blockHealth.remove(locKey);
+        blockOwners.remove(locKey);
+        lastPlayerToLowerHealth.remove(locKey);
+        lastPlayerToOpen.remove(locKey);
+        blockBreakTimes.remove(locKey);
     }
 
     private double getIncreaseModifier(Material material) {
@@ -551,23 +557,6 @@ public class BlockHealthListener implements Listener {
         player.sendMessage("§lOwner:§r " + ownerName);
         player.sendMessage("§lLast Player to Break:§r " + lastDamageCauserName);
         player.sendMessage("§lLast Player to Open:§r " + lastOpenName);
-
-        // Check if the player is the owner, then display the trusted list
-        if (ownerId != null && ownerId.equals(player.getUniqueId())) {
-            List<UUID> trustedPlayers = blockTrustedPlayers.getOrDefault(locKey, Collections.emptyList());
-            if (!trustedPlayers.isEmpty()) {
-                StringBuilder trustedNames = new StringBuilder();
-                for (UUID trustedPlayerUUID : trustedPlayers) {
-                    // Attempt to get the name of each trusted player
-                    String trustedPlayerName = Bukkit.getOfflinePlayer(trustedPlayerUUID).getName();
-                    if (trustedNames.length() > 0) trustedNames.append(", ");
-                    trustedNames.append(trustedPlayerName);
-                }
-                player.sendMessage("§lTrusted Players:§r " + trustedNames);
-            } else {
-                player.sendMessage("§lTrusted Players:§r None");
-            }
-        }
     }
 
     public boolean addPlayerToGlobalTrustList(Player owner, UUID trustedPlayerUUID) {
