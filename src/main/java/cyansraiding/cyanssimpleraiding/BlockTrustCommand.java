@@ -1,22 +1,23 @@
 package cyansraiding.cyanssimpleraiding;
 
-import org.bukkit.block.Container;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.bukkit.block.Block;
-import org.bukkit.util.BlockIterator;
 
 public class BlockTrustCommand implements CommandExecutor {
-    private final BlockHealthListener BlockHealthListener;
+    private final BlockHealthListener blockHealthListener;
 
-    public BlockTrustCommand(BlockHealthListener BlockHealthListener) {
-        this.BlockHealthListener = BlockHealthListener;
+    public BlockTrustCommand(BlockHealthListener blockHealthListener) {
+        this.blockHealthListener = blockHealthListener;
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage("Only players can use this command.");
+            return true;
+        }
 
         Player player = (Player) sender;
         if (args.length != 1) {
@@ -30,32 +31,23 @@ public class BlockTrustCommand implements CommandExecutor {
             return true;
         }
 
-        // Example: Determine the chest block the player is looking at.
-        Block chestBlock = getTargetChest(player);
-
-        if (chestBlock == null) {
-            player.sendMessage("[§9§lCSR§r§f] You are not looking at a chest.");
-            return true;
-        }
-
+        // The command now directly trusts/untrusts a player without needing to specify a container.
         if (command.getName().equalsIgnoreCase("trust")) {
-            BlockHealthListener.addPlayerToBlockTrustList(player, targetPlayer.getUniqueId(), chestBlock);
+            boolean success = blockHealthListener.addPlayerToGlobalTrustList(player, targetPlayer.getUniqueId());
+            if (success) {
+                player.sendMessage(String.format("[§9§lCSR§r§f] You have trusted %s with your containers.", targetPlayer.getName()));
+            } else {
+                player.sendMessage(String.format("[§9§lCSR§r§f] %s is already trusted.", targetPlayer.getName()));
+            }
         } else if (command.getName().equalsIgnoreCase("untrust")) {
-            BlockHealthListener.removePlayerFromBlockTrustList(player, targetPlayer.getUniqueId(), chestBlock);
+            boolean success = blockHealthListener.removePlayerFromGlobalTrustList(player, targetPlayer.getUniqueId());
+            if (success) {
+                player.sendMessage(String.format("[§9§lCSR§r§f] You have untrusted %s with your containers.", targetPlayer.getName()));
+            } else {
+                player.sendMessage(String.format("[§9§lCSR§r§f] %s was not trusted.", targetPlayer.getName()));
+            }
         }
 
         return true;
     }
-
-    private Block getTargetChest(Player player) {
-        BlockIterator iterator = new BlockIterator(player, 5); // 5 blocks deep
-        while (iterator.hasNext()) {
-            Block block = iterator.next();
-            if (block.getState() instanceof Container) {
-                return block;
-            }
-        }
-        return null;
-    }
 }
-

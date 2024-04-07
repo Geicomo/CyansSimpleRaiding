@@ -36,6 +36,8 @@ public class BlockHealthListener implements Listener {
     private final Map<String, UUID> lastPlayerToLowerHealth = new HashMap<>();
     private final Map<String, UUID> lastPlayerToOpen = new HashMap<>();
     private final Map<String, List<UUID>> blockTrustedPlayers = new HashMap<>(); // Added: Trusted players mapping
+    private final Map<UUID, List<UUID>> ownerTrustRelationships = new HashMap<>();
+
     private File dataFolder;
 
     public void setDataFolder(File dataFolder) {
@@ -52,61 +54,84 @@ public class BlockHealthListener implements Listener {
         }
 
         YamlConfiguration config = YamlConfiguration.loadConfiguration(dataFile);
+
+        // Existing blocks loading logic
         ConfigurationSection blocksSection = config.getConfigurationSection("blocks");
-        if (blocksSection == null) {
-            getLogger().info("[CyansSimpleRaiding] No data to read, if there is no chests in the world this is normal. Skipping...");
-            return;
-        }
+        if (blocksSection != null) {
+            // Clear previous data
+            blockOwners.clear();
+            blockHealth.clear();
+            lastPlayerToLowerHealth.clear();
+            lastPlayerToOpen.clear();
+            blockTrustedPlayers.clear();
+            ownerTrustRelationships.clear();
 
-        blockOwners.clear();
-        blockHealth.clear();
-        lastPlayerToLowerHealth.clear();
-        lastPlayerToOpen.clear();
-        blockTrustedPlayers.clear();
-
-        for (String key : blocksSection.getKeys(false)) {
-            ConfigurationSection blockSection = blocksSection.getConfigurationSection(key);
-            if (blockSection == null) continue;
-
-            // Owner
-            String ownerStr = blockSection.getString("owner");
-            if (ownerStr != null) {
-                UUID ownerUUID = UUID.fromString(ownerStr);
-                blockOwners.put(key, ownerUUID);
-            }
-
-            // Health
-            double health = blockSection.getDouble("health", -1.0); // Use a default value that indicates "not set"
-            if (health != -1.0) {
-                blockHealth.put(key, health);
-            }
-
-            // Last player to lower health
-            String lastToLowerHealthStr = blockSection.getString("lastToLowerHealth");
-            if (lastToLowerHealthStr != null) {
-                UUID lastToLowerHealthUUID = UUID.fromString(lastToLowerHealthStr);
-                lastPlayerToLowerHealth.put(key, lastToLowerHealthUUID);
-            }
-
-            // Last player to open
-            String lastToOpenStr = blockSection.getString("lastToOpen");
-            if (lastToOpenStr != null) {
-                UUID lastToOpenUUID = UUID.fromString(lastToOpenStr);
-                lastPlayerToOpen.put(key, lastToOpenUUID);
-            }
-
-            // Trusted players
-            List<String> trustedPlayersStr = blockSection.getStringList("trustedPlayers");
-            if (!trustedPlayersStr.isEmpty()) {
-                List<UUID> trustedPlayersUUID = new ArrayList<>();
-                for (String uuidStr : trustedPlayersStr) {
-                    trustedPlayersUUID.add(UUID.fromString(uuidStr));
+            for (String key : blocksSection.getKeys(false)) {
+                ConfigurationSection blockSection = blocksSection.getConfigurationSection(key);
+                if (blockSection == null) continue;
+                // Owner
+                String ownerStr = blockSection.getString("owner");
+                if (ownerStr != null) {
+                    UUID ownerUUID = UUID.fromString(ownerStr);
+                    blockOwners.put(key, ownerUUID);
                 }
-                blockTrustedPlayers.put(key, trustedPlayersUUID);
+
+                // Health
+                double health = blockSection.getDouble("health", -1.0); // Use a default value that indicates "not set"
+                if (health != -1.0) {
+                    blockHealth.put(key, health);
+                }
+
+                // Last player to lower health
+                String lastToLowerHealthStr = blockSection.getString("lastToLowerHealth");
+                if (lastToLowerHealthStr != null) {
+                    UUID lastToLowerHealthUUID = UUID.fromString(lastToLowerHealthStr);
+                    lastPlayerToLowerHealth.put(key, lastToLowerHealthUUID);
+                }
+
+                // Last player to open
+                String lastToOpenStr = blockSection.getString("lastToOpen");
+                if (lastToOpenStr != null) {
+                    UUID lastToOpenUUID = UUID.fromString(lastToOpenStr);
+                    lastPlayerToOpen.put(key, lastToOpenUUID);
+                }
+
+                // Trusted players
+                List<String> trustedPlayersStr = blockSection.getStringList("trustedPlayers");
+                if (!trustedPlayersStr.isEmpty()) {
+                    List<UUID> trustedPlayersUUID = new ArrayList<>();
+                    for (String uuidStr : trustedPlayersStr) {
+                        trustedPlayersUUID.add(UUID.fromString(uuidStr));
+                    }
+                    blockTrustedPlayers.put(key, trustedPlayersUUID);
+                }
             }
+        } else {
+            getLogger().info("[CyansSimpleRaiding] No blocks data to read. Skipping...");
         }
-        getLogger().info("[CyansSimpleRaiding] Successfully loaded all block data.");
+
+        // New logic for loading owner trust relationships
+        ConfigurationSection ownersSection = config.getConfigurationSection("ownerTrustRelationships");
+        if (ownersSection != null) {
+            ownerTrustRelationships.clear(); // Clear any previously loaded relationships
+
+            for (String ownerKey : ownersSection.getKeys(false)) {
+                List<String> trustedPlayersStr = ownersSection.getStringList(ownerKey);
+                if (!trustedPlayersStr.isEmpty()) {
+                    List<UUID> trustedPlayersUUID = new ArrayList<>();
+                    for (String uuidStr : trustedPlayersStr) {
+                        trustedPlayersUUID.add(UUID.fromString(uuidStr));
+                    }
+                    ownerTrustRelationships.put(UUID.fromString(ownerKey), trustedPlayersUUID);
+                }
+            }
+        } else {
+            getLogger().info("[CyansSimpleRaiding] No owner trust relationships data to read. Skipping...");
+        }
+
+        getLogger().info("[CyansSimpleRaiding] Successfully loaded all data.");
     }
+
 
     private String locationKey(Location location) {
         return Objects.requireNonNull(location.getWorld()).getName() + "," + location.getBlockX() + "," + location.getBlockY() + "," + location.getBlockZ();
@@ -192,6 +217,16 @@ public class BlockHealthListener implements Listener {
             }
         }
 
+        if (!ownerTrustRelationships.isEmpty()) {
+            for (Map.Entry<UUID, List<UUID>> entry : ownerTrustRelationships.entrySet()) {
+                // Convert the list of UUIDs to a list of strings
+                List<String> trustedPlayerStrings = entry.getValue().stream()
+                        .map(UUID::toString)
+                        .collect(Collectors.toList());
+                config.set("ownerTrustRelationships." + entry.getKey().toString(), trustedPlayerStrings);
+            }
+        }
+
         try {
             config.save(dataFile);
             getLogger().info("[CyansSimpleRaiding] Successfully saved block data of containers.");
@@ -223,25 +258,17 @@ public class BlockHealthListener implements Listener {
     }
 
     private void processContainerAccess(InventoryOpenEvent event, String locKey, UUID playerUUID) {
-        // Capture and store the container inventory contents before any potential changes
-        blockContentsBefore.put(playerUUID, event.getInventory().getContents().clone());
-
-        if (adminOverrides.contains(playerUUID)) {
-            return; // Admin override allows immediate access
-        }
-
         UUID ownerId = blockOwners.get(locKey);
-        List<UUID> trustedPlayers = blockTrustedPlayers.getOrDefault(locKey, new ArrayList<>());
-        if (ownerId == null || (!ownerId.equals(playerUUID) && !trustedPlayers.contains(playerUUID))) {
-            event.getPlayer().sendMessage("[§9§lCSR§r§f] You are not trusted or don't own this container.");
-            event.setCancelled(true);
+        if (ownerId != null) {
+            List<UUID> trustedPlayers = ownerTrustRelationships.getOrDefault(ownerId, new ArrayList<>());
+            if (ownerId.equals(playerUUID) || trustedPlayers.contains(playerUUID)) {
+                // The player is either the owner or trusted; allow access.
+                return;
+            }
         }
-
-        if (isBlockOnCooldown(locKey, playerUUID)) {
-            event.setCancelled(true);
-        }
-
-        lastPlayerToOpen.put(locKey, playerUUID);
+        // If we reach here, the player is neither the owner nor trusted.
+        event.setCancelled(true);
+        event.getPlayer().sendMessage("[§9§lCSR§r§f] You do not have permission to open this container.");
     }
 
     public boolean isBlockOnCooldown(String locKey, UUID playerUUID) {
@@ -458,10 +485,10 @@ public class BlockHealthListener implements Listener {
                 return 8.0;
             case IRON_INGOT:
             case RAW_IRON:
-                //Copper
+            //Copper
             case COPPER_ORE:
             case RAW_COPPER:
-                return 5.0;
+                return 3.0;
             //Gold
             case GOLDEN_AXE: //Fastest axe to break chests
                 return 8.0;
@@ -476,6 +503,10 @@ public class BlockHealthListener implements Listener {
                 return 5.0;
             case GOLD_INGOT:
                 return 2.0;
+            case LAPIS_BLOCK:
+                return 2.0;
+            case LAPIS_LAZULI:
+                return 1.0;
             //Other Resources
             case COBBLESTONE:
             case DIRT:
@@ -484,6 +515,7 @@ public class BlockHealthListener implements Listener {
             case ELYTRA:
                 return 25.0;
             case SHULKER_BOX:
+            case ENCHANTED_GOLDEN_APPLE:
                 return 15.0;
             case EMERALD:
                 return 5.0;
@@ -545,41 +577,28 @@ public class BlockHealthListener implements Listener {
         }
     }
 
+    public boolean addPlayerToGlobalTrustList(Player owner, UUID trustedPlayerUUID) {
+        UUID ownerId = owner.getUniqueId();
+        List<UUID> trustedPlayers = ownerTrustRelationships.getOrDefault(ownerId, new ArrayList<>());
 
-    public void addPlayerToBlockTrustList(Player owner, UUID trustedPlayerUUID, Block chestBlock) {
-        String locKey = locationKey(chestBlock.getLocation());
-        UUID ownerId = blockOwners.get(locKey);
-
-        if (ownerId != null && ownerId.equals(owner.getUniqueId())) {
-            List<UUID> trustedPlayers = blockTrustedPlayers.getOrDefault(locKey, new ArrayList<>());
-            if (!trustedPlayers.contains(trustedPlayerUUID)) {
-                trustedPlayers.add(trustedPlayerUUID);
-                blockTrustedPlayers.put(locKey, trustedPlayers);
-                owner.sendMessage("[§9§lCSR§r§f] Player trusted with the container.");
-            } else {
-                owner.sendMessage("[§9§lCSR§r§f] Player is already trusted with this container.");
-            }
-        } else {
-            owner.sendMessage("[§9§lCSR§r§f] You are not the owner of this container.");
+        if (!trustedPlayers.contains(trustedPlayerUUID)) {
+            trustedPlayers.add(trustedPlayerUUID);
+            ownerTrustRelationships.put(ownerId, trustedPlayers);
+            return true; // Indicate that the player was successfully added
         }
+        return false; // Player was already trusted
     }
 
-    public void removePlayerFromBlockTrustList(Player owner, UUID untrustedPlayerUUID, Block chestBlock) {
-        String locKey = locationKey(chestBlock.getLocation());
-        UUID ownerId = blockOwners.get(locKey);
+    public boolean removePlayerFromGlobalTrustList(Player owner, UUID untrustedPlayerUUID) {
+        UUID ownerId = owner.getUniqueId();
+        List<UUID> trustedPlayers = ownerTrustRelationships.getOrDefault(ownerId, new ArrayList<>());
 
-        if (ownerId != null && ownerId.equals(owner.getUniqueId())) {
-            List<UUID> trustedPlayers = blockTrustedPlayers.getOrDefault(locKey, new ArrayList<>());
-            if (trustedPlayers.contains(untrustedPlayerUUID)) {
-                trustedPlayers.remove(untrustedPlayerUUID);
-                blockTrustedPlayers.put(locKey, trustedPlayers);
-                owner.sendMessage("[§9§lCSR§r§f] Player removed from the trusted list.");
-            } else {
-                owner.sendMessage("[§9§lCSR§r§f] Player was not trusted with this chest.");
-            }
-        } else {
-            owner.sendMessage("[§9§lCSR§r§f]§c You are not the owner of this chest.");
+        if (trustedPlayers.contains(untrustedPlayerUUID)) {
+            trustedPlayers.remove(untrustedPlayerUUID);
+            ownerTrustRelationships.put(ownerId, trustedPlayers);
+            return true; // Indicate that the player was successfully removed
         }
+        return false; // Player was not trusted
     }
 
     public void toggleCsrAdmin(Player player) {
