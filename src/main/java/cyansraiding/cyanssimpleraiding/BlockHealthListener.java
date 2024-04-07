@@ -37,8 +37,36 @@ public class BlockHealthListener implements Listener {
     private final Map<String, UUID> lastPlayerToOpen = new HashMap<>();
     private final Map<String, List<UUID>> blockTrustedPlayers = new HashMap<>(); // Added: Trusted players mapping
     private final Map<UUID, List<UUID>> ownerTrustRelationships = new HashMap<>();
-
     private File dataFolder;
+    private String locationKey(Location location) {
+        return Objects.requireNonNull(location.getWorld()).getName() + "," + location.getBlockX() + "," + location.getBlockY() + "," + location.getBlockZ();
+    }
+
+    @EventHandler
+    public void onEntityExplode(EntityExplodeEvent event) {
+        // Use a new ArrayList to avoid ConcurrentModificationException
+        List<Block> blocksToRemove = new ArrayList<>();
+        for (Block block : event.blockList()) {
+            String locKey = locationKey(block.getLocation());
+            if (block.getState() instanceof Container && blockHealth.containsKey(locKey)) {
+                blocksToRemove.add(block);
+            }
+        }
+        // Remove all identified chest blocks from the event's block list
+        event.blockList().removeAll(blocksToRemove);
+    }
+
+    @EventHandler
+    public void onBlockExplode(BlockExplodeEvent event) {
+        List<Block> blocksToRemove = new ArrayList<>();
+        for (Block block : event.blockList()) {
+            String locKey = locationKey(block.getLocation());
+            if (block.getState() instanceof Container && blockHealth.containsKey(locKey)) {
+                blocksToRemove.add(block);
+            }
+        }
+        event.blockList().removeAll(blocksToRemove);
+    }
 
     public void setDataFolder(File dataFolder) {
         this.dataFolder = dataFolder;
@@ -132,53 +160,6 @@ public class BlockHealthListener implements Listener {
         getLogger().info("[CyansSimpleRaiding] Successfully loaded all data.");
     }
 
-
-    private String locationKey(Location location) {
-        return Objects.requireNonNull(location.getWorld()).getName() + "," + location.getBlockX() + "," + location.getBlockY() + "," + location.getBlockZ();
-    }
-
-    @EventHandler
-    public void onEntityExplode(EntityExplodeEvent event) {
-        // Use a new ArrayList to avoid ConcurrentModificationException
-        List<Block> blocksToRemove = new ArrayList<>();
-        for (Block block : event.blockList()) {
-            String locKey = locationKey(block.getLocation());
-            if (block.getState() instanceof Container && blockHealth.containsKey(locKey)) {
-                blocksToRemove.add(block);
-            }
-        }
-        // Remove all identified chest blocks from the event's block list
-        event.blockList().removeAll(blocksToRemove);
-    }
-
-    @EventHandler
-    public void onBlockExplode(BlockExplodeEvent event) {
-        List<Block> blocksToRemove = new ArrayList<>();
-        for (Block block : event.blockList()) {
-            String locKey = locationKey(block.getLocation());
-            if (block.getState() instanceof Container && blockHealth.containsKey(locKey)) {
-                blocksToRemove.add(block);
-            }
-        }
-        event.blockList().removeAll(blocksToRemove);
-    }
-
-    @EventHandler
-    public void onBlockPlace(BlockPlaceEvent event) {
-        Block block = event.getBlockPlaced();
-        if (block.getState() instanceof Container) {
-            // The block is a container, so we proceed with protection
-            Container container = (Container) block.getState();
-
-            // Perform your logic for container protection here
-            String blockLocKey = locationKey(container.getLocation());
-
-            // Assuming all containers start with a default "health" value
-            blockHealth.put(blockLocKey, 100.0);
-            blockOwners.put(blockLocKey, event.getPlayer().getUniqueId());
-        }
-    }
-
     public void saveBlockData() {
         if (dataFolder == null) return; // Make sure dataFolder has been set
 
@@ -238,17 +219,32 @@ public class BlockHealthListener implements Listener {
     }
 
     @EventHandler
-    public void onInventoryOpen(InventoryOpenEvent event) {
-        if (!(event.getPlayer() instanceof Player)) return; // Ensure the event invoker is a player
-        Player player = (Player) event.getPlayer();
-        UUID playerUUID = player.getUniqueId(); // Get the player's UUID
+    public void onBlockPlace(BlockPlaceEvent event) {
+        Block block = event.getBlockPlaced();
+        if (block.getState() instanceof Container) {
+            // The block is a container, so we proceed with protection
+            Container container = (Container) block.getState();
 
-        InventoryHolder holder = event.getInventory().getHolder();
+            // Perform your logic for container protection here
+            String blockLocKey = locationKey(container.getLocation());
 
-        if (holder instanceof Container) {
-            // Handling for single Container
-            handleSingleContainer(event, (Container) holder, playerUUID);
+            // Assuming all containers start with a default "health" value
+            blockHealth.put(blockLocKey, 100.0);
+            blockOwners.put(blockLocKey, event.getPlayer().getUniqueId());
         }
+    }
+
+    @EventHandler
+    public void onInventoryOpen(InventoryOpenEvent event) {
+        if (!(event.getPlayer() instanceof Player)) return;
+        InventoryHolder holder = event.getInventory().getHolder();
+        if (!(holder instanceof Container)) return;
+
+        Player player = (Player) event.getPlayer();
+        UUID playerUUID = player.getUniqueId();
+        ItemStack[] contents = event.getInventory().getContents();
+        handleSingleContainer(event, (Container) holder, playerUUID);
+        blockContentsBefore.put(playerUUID, contents.clone());
     }
 
     private void handleSingleContainer(InventoryOpenEvent event, Container container, UUID playerUUID) {
@@ -295,17 +291,14 @@ public class BlockHealthListener implements Listener {
     public void onInventoryClose(InventoryCloseEvent event) {
         if (!(event.getPlayer() instanceof Player)) return;
         InventoryHolder holder = event.getInventory().getHolder();
+        if (!(holder instanceof Container)) return;
 
         Player player = (Player) event.getPlayer();
         UUID playerUUID = player.getUniqueId();
         ItemStack[] contentsBefore = blockContentsBefore.getOrDefault(playerUUID, new ItemStack[0]);
         ItemStack[] contentsAfter = event.getInventory().getContents();
 
-        boolean hasChanged = !Arrays.equals(contentsBefore, contentsAfter);
-
-        if (!(holder instanceof BlockState)) {
-            return;
-        }
+        boolean hasChanged = !Arrays.deepEquals(contentsBefore, contentsAfter); // Correctly comparing deep contents
 
         if (hasChanged) {
             Container container = (Container) holder;
@@ -313,7 +306,7 @@ public class BlockHealthListener implements Listener {
             updateBlockHealthAndNotifyPlayer(container, player, locKey);
         }
 
-        blockContentsBefore.remove(playerUUID);
+        blockContentsBefore.remove(playerUUID); // Clearing the record for this player
     }
 
     @EventHandler
@@ -343,6 +336,28 @@ public class BlockHealthListener implements Listener {
         if (containerOwner == null || !containerOwner.equals(hopperOwner)) {
             event.setCancelled(true);
         }
+    }
+
+    private void updateBlockHealthAndNotifyPlayer(Container container, Player player, String locKey) {
+        if (blockHealth.containsKey(locKey)) {
+            double healthIncrease = calculateBlockHealthBasedOnContents(container.getBlock());
+            double newTotalHealth = 100.0 + healthIncrease;
+            blockHealth.put(locKey, newTotalHealth);
+            player.sendMessage(String.format("[§9§lCSR§r§f] New container health: §a%.2f%%.", newTotalHealth));
+        }
+    }
+
+    private double calculateBlockHealthBasedOnContents(Block containerBlock) {
+        double healthIncrease = 0.0;
+        if (containerBlock.getState() instanceof Container) {
+            Container container = (Container) containerBlock.getState();
+            for (ItemStack item : container.getInventory().getContents()) {
+                if (item != null) {
+                    healthIncrease += getIncreaseModifier(item.getType()) * item.getAmount();
+                }
+            }
+        }
+        return healthIncrease;
     }
 
     @EventHandler
@@ -410,28 +425,6 @@ public class BlockHealthListener implements Listener {
         }
     }
 
-    private void updateBlockHealthAndNotifyPlayer(Container container, Player player, String locKey) {
-        if (blockHealth.containsKey(locKey)) {
-            double healthIncrease = calculateBlockHealthBasedOnContents(container.getBlock());
-            double newTotalHealth = 100.0 + healthIncrease;
-            blockHealth.put(locKey, newTotalHealth);
-            player.sendMessage(String.format("[§9§lCSR§r§f] New container health: §a%.2f%%.", newTotalHealth));
-        }
-    }
-
-    private double calculateBlockHealthBasedOnContents(Block containerBlock) {
-        double healthIncrease = 0.0;
-        if (containerBlock.getState() instanceof Container) {
-            Container container = (Container) containerBlock.getState();
-            for (ItemStack item : container.getInventory().getContents()) {
-                if (item != null) {
-                    healthIncrease += getIncreaseModifier(item.getType()) * item.getAmount();
-                }
-            }
-        }
-        return healthIncrease;
-    }
-
     private double getIncreaseModifier(Material material) {
         switch (material) {
             //Netherite
@@ -485,7 +478,7 @@ public class BlockHealthListener implements Listener {
                 return 8.0;
             case IRON_INGOT:
             case RAW_IRON:
-            //Copper
+                //Copper
             case COPPER_ORE:
             case RAW_COPPER:
                 return 3.0;
