@@ -16,6 +16,7 @@ import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.EquipmentSlot;
+import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import java.io.File;
 import java.io.IOException;
@@ -28,6 +29,7 @@ import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import static org.bukkit.Bukkit.getLogger;
 
+@SuppressWarnings("ALL")
 public class BlockHealthListener implements Listener {
     private final Map<String, Double> blockHealth = new HashMap<>();
     private final Map<String, UUID> blockOwners = new HashMap<>();
@@ -227,44 +229,104 @@ public class BlockHealthListener implements Listener {
     @EventHandler
     public void onBlockPlace(BlockPlaceEvent event) {
         Block block = event.getBlockPlaced();
-        if (block.getState() instanceof Container) {
-            // The block is a container, so we proceed with protection
-            Container container = (Container) block.getState();
 
-            // Perform your logic for container protection here
+        if (block.getState() instanceof Chest) {
+            Chest chest = (Chest) block.getState();
+            Chest adjacentChest = findAdjacentChest(chest);
+
+            String blockLocKey = locationKey(block.getLocation());
+            UUID playerUUID = event.getPlayer().getUniqueId();
+            blockHealth.put(blockLocKey, 100.0); // Default health for a single chest
+            blockOwners.put(blockLocKey, playerUUID);
+
+            if (adjacentChest != null) {
+                String adjacentLocKey = locationKey(adjacentChest.getLocation());
+                UUID adjacentChestOwner = blockOwners.get(adjacentLocKey);
+
+                // Correctly get the list of trusted players for the OWNER of the adjacent chest
+                List<UUID> trustedPlayers = ownerTrustRelationships.getOrDefault(adjacentChestOwner, new ArrayList<>());
+
+                if (!playerUUID.equals(adjacentChestOwner) && !trustedPlayers.contains(playerUUID)) {
+                    // Player is not the owner and is not a trusted player, cancel the event
+                    event.setCancelled(true);
+                    event.getPlayer().sendMessage("[§9§lCSR§r§f] Only trusted players can combine chests.");
+                } else {
+                    // Either the player is the owner or a trusted player, allow the chest to combine
+                    blockHealth.put(adjacentLocKey, 100.0);
+                    return;
+                }
+            }
+        }
+
+        if (block.getState() instanceof Container) {
+            Container container = (Container) block.getState();
             String blockLocKey = locationKey(container.getLocation());
 
-            // Assuming all containers start with a default "health" value
             blockHealth.put(blockLocKey, 100.0);
             blockOwners.put(blockLocKey, event.getPlayer().getUniqueId());
         }
+    }
+
+    private Chest findAdjacentChest(Chest chest) {
+        BlockFace[] faces = new BlockFace[]{ BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST };
+        for (BlockFace face : faces) {
+            Block relative = chest.getBlock().getRelative(face);
+            if (relative.getState() instanceof Chest) {
+                return (Chest) relative.getState();
+            }
+        }
+        return null;
     }
 
     @EventHandler
     public void onInventoryOpen(InventoryOpenEvent event) {
         if (!(event.getPlayer() instanceof Player)) return;
         InventoryHolder holder = event.getInventory().getHolder();
-        if (!(holder instanceof Container)) return;
+
+        // Early return if the holder is neither a Container nor a DoubleChest.
+        if (!(holder instanceof Container || holder instanceof DoubleChest)) return;
 
         Player player = (Player) event.getPlayer();
         UUID playerUUID = player.getUniqueId();
-        ItemStack[] contents = event.getInventory().getContents();
-        handleSingleContainer(event, (Container) holder, playerUUID);
-        blockContentsBefore.put(playerUUID, contents.clone());
-    }
+        ItemStack[] contents = event.getInventory().getContents().clone();
+        blockContentsBefore.put(event.getPlayer().getUniqueId(), contents);
 
-    private void handleSingleContainer(InventoryOpenEvent event, Container container, UUID playerUUID) {
-        String locKey = locationKey(container.getLocation());
+        String locKey = null;
 
-        processContainerAccess(event, locKey, playerUUID);
+            // Handle DoubleChest specifically
+            if (holder instanceof DoubleChest) {
+                Inventory inventory = event.getInventory();
+                DoubleChest doubleChest = (DoubleChest) holder;
+                if (isBlockOnCooldown(locKey, playerUUID)) {
+                    event.setCancelled(true);
+                    return; // Stop processing if the block is on cooldown
+                }
+                Chest leftChest = (Chest) doubleChest.getLeftSide();
+                assert leftChest != null;
+                locKey = locationKey(leftChest.getLocation());
+                processContainerAccess(event, locKey, playerUUID);
+                return;
+            }
+            // Single chest or other container types
+            Container container = (Container) holder;
+            locKey = locationKey(container.getLocation());
+        if (isBlockOnCooldown(locKey, playerUUID)) {
+            event.setCancelled(true);
+            return; // Stop processing if the block is on cooldown
+        }
+            processContainerAccess(event, locKey, playerUUID);
     }
 
     private void processContainerAccess(InventoryOpenEvent event, String locKey, UUID playerUUID) {
+        if (adminOverrides.contains(playerUUID)) {
+            return; // Admin override allows immediate access
+        }
+
         UUID ownerId = blockOwners.get(locKey);
         if (ownerId != null) {
             List<UUID> trustedPlayers = ownerTrustRelationships.getOrDefault(ownerId, new ArrayList<>());
             if (ownerId.equals(playerUUID) || trustedPlayers.contains(playerUUID)) {
-                // The player is either the owner or trusted; allow access.
+                lastPlayerToOpen.put(locKey, playerUUID);
                 return;
             }
         }
@@ -283,9 +345,10 @@ public class BlockHealthListener implements Listener {
         long cooldownDuration = 40000; // 40 seconds cooldown
         if (timeSinceBreak < cooldownDuration) {
             Player player = Bukkit.getPlayer(playerUUID); // Retrieve the player from UUID
-            long timeLeft = (cooldownDuration - timeSinceBreak) / 1000; // Convert to seconds
-            assert player != null;
-            player.sendMessage("[§9§lCSR§r§f] This container is being§c raided!§r " + timeLeft + " seconds.");
+            if (player != null) {
+                long timeLeft = (cooldownDuration - timeSinceBreak) / 1000; // Convert to seconds
+                player.sendMessage("[§9§lCSR§r§f] This container is being§c raided!§r " + timeLeft + " seconds left.");
+            }
             return true;
         } else {
             blockBreakTimes.remove(locKey); // Cooldown expired, remove entry
@@ -297,7 +360,7 @@ public class BlockHealthListener implements Listener {
     public void onInventoryClose(InventoryCloseEvent event) {
         if (!(event.getPlayer() instanceof Player)) return;
         InventoryHolder holder = event.getInventory().getHolder();
-        if (!(holder instanceof Container)) return;
+        if (!(holder instanceof Container || holder instanceof DoubleChest)) return;
 
         Player player = (Player) event.getPlayer();
         UUID playerUUID = player.getUniqueId();
@@ -307,12 +370,60 @@ public class BlockHealthListener implements Listener {
         boolean hasChanged = !Arrays.deepEquals(contentsBefore, contentsAfter); // Correctly comparing deep contents
 
         if (hasChanged) {
-            Container container = (Container) holder;
-            String locKey = locationKey(container.getLocation());
-            updateBlockHealthAndNotifyPlayer(container, player, locKey);
+            String locKey;
+            Inventory inventory = event.getInventory();
+            if (holder instanceof DoubleChest) {
+                    DoubleChest doubleChest = (DoubleChest) holder;
+                    Chest leftChest = (Chest) doubleChest.getLeftSide();
+                    Chest rightChest = (Chest) doubleChest.getRightSide();
+                    // Now choose one side (left or right) to represent the double chest's location
+                assert leftChest != null;
+                locKey = locationKey(leftChest.getLocation());
+                    // Ensure your locationKey method and update logic handles this correctly
+                updateBlockHealthAndNotifyPlayer(inventory, player, locKey);
+
+                blockContentsBefore.remove(playerUUID); // Clearing the record for this player
+                return;
+            }
+            locKey = locationKey(((Container) holder).getLocation());
+            updateBlockHealthAndNotifyPlayer(inventory, player, locKey);
         }
 
         blockContentsBefore.remove(playerUUID); // Clearing the record for this player
+    }
+
+    private void updateBlockHealthAndNotifyPlayer(Inventory inventory, Player player, String locKey) {
+        InventoryHolder holder = inventory.getHolder();
+        // Directly calculate the total health based on current contents.
+        double newTotalHealth = 100.0 + calculateHealthBasedOnContents(inventory); // Starts fresh from base health
+
+        if (holder instanceof DoubleChest) {
+            DoubleChest doubleChest = (DoubleChest) holder;
+            Chest leftChest = (Chest) doubleChest.getLeftSide();
+            Chest rightChest = (Chest) doubleChest.getRightSide();
+
+            assert leftChest != null;
+            String leftLocKey = locationKey(leftChest.getLocation());
+            assert rightChest != null;
+            String rightLocKey = locationKey(rightChest.getLocation());
+
+            blockHealth.put(leftLocKey, newTotalHealth);
+            blockHealth.put(rightLocKey, newTotalHealth);
+            player.sendMessage(String.format("[§9§lCSR§r§f] Double chest health updated: §a%.2f%%.", newTotalHealth));
+        } else {
+            blockHealth.put(locKey, newTotalHealth);
+            player.sendMessage(String.format("[§9§lCSR§r§f] Container health updated: §a%.2f%%.", newTotalHealth));
+        }
+    }
+
+    private double calculateHealthBasedOnContents(Inventory inventory) {
+        double healthIncrease = 0.0;
+        for (ItemStack item : inventory.getContents()) {
+            if (item != null) {
+                healthIncrease += getIncreaseModifier(item.getType()) * item.getAmount();
+            }
+        }
+        return healthIncrease;
     }
 
     @EventHandler
@@ -344,69 +455,120 @@ public class BlockHealthListener implements Listener {
         }
     }
 
-    private void updateBlockHealthAndNotifyPlayer(Container container, Player player, String locKey) {
-        if (blockHealth.containsKey(locKey)) {
-            double healthIncrease = calculateBlockHealthBasedOnContents(container.getBlock());
-            double newTotalHealth = 100.0 + healthIncrease;
-            blockHealth.put(locKey, newTotalHealth);
-            player.sendMessage(String.format("[§9§lCSR§r§f] New container health: §a%.2f%%.", newTotalHealth));
-        }
-    }
-
-    private double calculateBlockHealthBasedOnContents(Block containerBlock) {
-        double healthIncrease = 0.0;
-        if (containerBlock.getState() instanceof Container) {
-            Container container = (Container) containerBlock.getState();
-            for (ItemStack item : container.getInventory().getContents()) {
-                if (item != null) {
-                    healthIncrease += getIncreaseModifier(item.getType()) * item.getAmount();
-                }
-            }
-        }
-        return healthIncrease;
-    }
-
     @EventHandler
     public void onBlockBreak(BlockBreakEvent event) {
         Block block = event.getBlock();
-        if (!(block.getState() instanceof Container)) return;
-
         Player player = event.getPlayer();
         String locKey = locationKey(block.getLocation());
-
-        if (adminOverrides.contains(player.getUniqueId())) {
-            // Your existing logic for handling admin overrides
-            return;
-        }
-
         UUID ownerId = blockOwners.get(locKey);
 
-        if (ownerId == null) {
-            return; // Exit to avoid NullPointerException
-        }
+        if (block.getType() == Material.CHEST) {
+            Chest chest = (Chest) block.getState();
+            Chest adjacentChest = findAdjacentChest(chest);
 
-        List<UUID> trustedPlayers = ownerTrustRelationships.getOrDefault(ownerId, new ArrayList<>());
+            if (adminOverrides.contains(player.getUniqueId())) {
+                return;
+            }
 
-        if (ownerId.equals(player.getUniqueId()) || trustedPlayers.contains(player.getUniqueId())) {
-            removeBlockProtectionData(locKey);
-            return;
-        }
-        double currentHealth = blockHealth.getOrDefault(locKey, 100.0);
-        double newHealth = currentHealth - 20;
+            if (ownerId == null) return; // No owner, no action needed
 
-        if (blockHealth.containsKey(locKey)) {
+            List<UUID> trustedPlayers = ownerTrustRelationships.getOrDefault(ownerId, new ArrayList<>());
 
-            if (newHealth > 0) {
+            if (ownerId.equals(player.getUniqueId()) || trustedPlayers.contains(player.getUniqueId())) {
+                removeBlockProtectionData(locKey);
+                return;
+            }
+
+            double currentHealth = blockHealth.getOrDefault(locKey, 100.0);
+            double newHealth = currentHealth - 20; // Standard health reduction
+
+            if (adjacentChest != null) {
+                // Adjust for double chest, assuming you want to halve the decrement for each
+                newHealth = currentHealth - 20; // Adjust so total reduction is spread across both parts
+            }
+
+            if (newHealth <= 0) {
+                // Break Block
+                blockHealth.remove(locKey);
+
+                if (adjacentChest != null) {
+                    // Handle the adjacent part of the double chest similarly
+                    dropItemsAndBlock(adjacentChest.getLocation(), adjacentChest.getInventory());
+                    blockHealth.remove(locationKey(adjacentChest.getLocation()));
+                    adjacentChest.getBlock().setType(Material.AIR);
+                }
+                removeBlockProtectionData(locKey);
+            } else {
+                // Update Health and Block
                 blockHealth.put(locKey, newHealth);
+                if (adjacentChest != null) {
+                    String adjacentLocKey = locationKey(adjacentChest.getLocation());
+                    blockHealth.put(adjacentLocKey, newHealth);
+                }
                 lastPlayerToLowerHealth.put(locKey, player.getUniqueId());
+
                 blockBreakTimes.put(locKey, System.currentTimeMillis());
                 handleBlockHealthReduction(locKey, player, currentHealth);
 
-                event.setCancelled(true); // Prevent the chest from actually breaking
-            } else {
+                event.setCancelled(true); // Prevent default breaking
+            }
+            return;
+        }
+
+        if (block.getState() instanceof Container) {
+            if (adminOverrides.contains(player.getUniqueId())) {
+                // Your existing logic for handling admin overrides
+                return;
+            }
+
+            if (ownerId == null) {
+                return; // Exit to avoid NullPointerException
+            }
+
+            List<UUID> trustedPlayers = ownerTrustRelationships.getOrDefault(ownerId, new ArrayList<>());
+
+            if (ownerId.equals(player.getUniqueId()) || trustedPlayers.contains(player.getUniqueId())) {
                 removeBlockProtectionData(locKey);
+                return;
+            }
+            double currentHealth = blockHealth.getOrDefault(locKey, 100.0);
+            double newHealth = currentHealth - 20;
+
+            if (blockHealth.containsKey(locKey)) {
+
+                if (newHealth > 0) {
+                    blockHealth.put(locKey, newHealth);
+                    lastPlayerToLowerHealth.put(locKey, player.getUniqueId());
+                    blockBreakTimes.put(locKey, System.currentTimeMillis());
+                    handleBlockHealthReduction(locKey, player, currentHealth);
+
+                    event.setCancelled(true);
+                } else {
+                    removeBlockProtectionData(locKey);
+                }
             }
         }
+    }
+
+    private void dropItemsAndBlock(Location location, Inventory inventory) {
+        World world = location.getWorld();
+        if (world == null) return; // Just in case
+
+        // Drop items from the inventory first
+        for (ItemStack item : inventory.getContents()) {
+            if (item != null && item.getType() != Material.AIR) {
+                world.dropItemNaturally(location, item);
+            }
+        }
+        inventory.clear(); // Clear inventory after dropping items
+
+        // Now, drop the chest block itself
+        dropChestBlock(location, world);
+    }
+
+    private void dropChestBlock(Location location, World world) {
+        // Assuming you're working with generic chests. Adjust if you're using trapped chests, etc.
+        world.dropItemNaturally(location, new ItemStack(Material.CHEST, 1));
     }
 
     private void handleBlockHealthReduction(String locKey, Player player, double currentHealth) {
