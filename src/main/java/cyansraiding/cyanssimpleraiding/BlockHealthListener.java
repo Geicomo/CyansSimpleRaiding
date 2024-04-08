@@ -323,6 +323,9 @@ public class BlockHealthListener implements Listener {
         }
 
         UUID ownerId = blockOwners.get(locKey);
+        if (ownerId == null) {
+            return;
+        }
         if (ownerId != null) {
             List<UUID> trustedPlayers = ownerTrustRelationships.getOrDefault(ownerId, new ArrayList<>());
             if (ownerId.equals(playerUUID) || trustedPlayers.contains(playerUUID)) {

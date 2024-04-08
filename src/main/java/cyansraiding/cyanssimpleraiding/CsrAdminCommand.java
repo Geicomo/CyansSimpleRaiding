@@ -24,7 +24,7 @@ public class CsrAdminCommand implements CommandExecutor {
         if (player.hasPermission("cyansraiding.csradmin")) {
             BlockHealthListener.toggleCsrAdmin(player);
         } else {
-            player.sendMessage("You do not have the permissions to use this command.");
+            player.sendMessage("[§9§lCSR§r§f] You do not have the permissions to use this command.");
         }
         return true;
     }
