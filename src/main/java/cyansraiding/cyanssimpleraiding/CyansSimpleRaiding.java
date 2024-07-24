@@ -13,9 +13,8 @@ public final class CyansSimpleRaiding extends JavaPlugin {
         getServer().getPluginManager().registerEvents(blockHealthListener, this);
 
 
-        this.getCommand("trust").setExecutor(new BlockTrustCommand(blockHealthListener));
-        this.getCommand("untrust").setExecutor(new BlockTrustCommand(blockHealthListener));
         this.getCommand("csradmin").setExecutor(new CsrAdminCommand(blockHealthListener));
+        getCommand("csr").setExecutor(new CsrCommands(blockHealthListener));
 
         getLogger().info("CSR Enabled");
     }
