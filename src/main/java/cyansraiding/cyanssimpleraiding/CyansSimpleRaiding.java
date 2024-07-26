@@ -4,7 +4,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 public final class CyansSimpleRaiding extends JavaPlugin {
 
     // Assume your BlockHealthListener class is here
-    private final BlockHealthListener blockHealthListener = new BlockHealthListener();
+    private final BlockHealthListener blockHealthListener = new BlockHealthListener(this);
 
     @Override
     public void onEnable() {
@@ -15,6 +15,17 @@ public final class CyansSimpleRaiding extends JavaPlugin {
 
         this.getCommand("csradmin").setExecutor(new CsrAdminCommand(blockHealthListener));
         getCommand("csr").setExecutor(new CsrCommands(blockHealthListener));
+
+        new UpdateChecker(this, 118344).getVersion(latestVersion -> {
+            String currentVersion = this.getDescription().getVersion();
+            if (currentVersion.equals(latestVersion)) {
+                getLogger().info("No new updates available. You are using the latest version: " + currentVersion);
+            } else {
+                getLogger().info("A new update is available! Current version: " + currentVersion + ", Latest version: " + latestVersion);
+            }
+        });
+
+
 
         getLogger().info("CSR Enabled");
     }

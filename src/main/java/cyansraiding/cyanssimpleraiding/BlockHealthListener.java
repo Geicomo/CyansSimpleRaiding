@@ -28,6 +28,11 @@ import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import static org.bukkit.Bukkit.getLogger;
+import org.bukkit.boss.BarColor;
+import org.bukkit.boss.BarStyle;
+import org.bukkit.boss.BossBar;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitRunnable;
 
 @SuppressWarnings("ALL")
 public class BlockHealthListener implements Listener {
@@ -39,7 +44,15 @@ public class BlockHealthListener implements Listener {
     private final Map<String, UUID> lastPlayerToLowerHealth = new HashMap<>();
     private final Map<String, UUID> lastPlayerToOpen = new HashMap<>();
     private final Map<UUID, List<UUID>> ownerTrustRelationships = new HashMap<>();
+    private JavaPlugin plugin = null; // Replace MyPlugin with your actual plugin class
+    private final Map<UUID, BossBar> playerBossBars = new HashMap<>();
+    private final Map<UUID, NotificationType> playerNotificationPreferences = new HashMap<>();
     private File dataFolder;
+
+    public BlockHealthListener(JavaPlugin plugin) {
+        this.plugin = plugin;
+    }
+
     private String locationKey(Location location) {
         return Objects.requireNonNull(location.getWorld()).getName() + "," + location.getBlockX() + "," + location.getBlockY() + "," + location.getBlockZ();
     }
@@ -68,6 +81,11 @@ public class BlockHealthListener implements Listener {
             }
         }
         event.blockList().removeAll(blocksToRemove);
+    }
+
+    public enum NotificationType {
+        CHAT,
+        BOSS_BAR
     }
 
     public void setDataFolder(File dataFolder) {
@@ -493,6 +511,7 @@ public class BlockHealthListener implements Listener {
             if (newHealth <= 0) {
                 // Break Block
                 blockHealth.remove(locKey);
+                removeBossBar(player);
 
                 if (adjacentChest != null) {
                     // Handle the adjacent part of the double chest similarly
@@ -504,6 +523,8 @@ public class BlockHealthListener implements Listener {
             } else {
                 // Update Health and Block
                 blockHealth.put(locKey, newHealth);
+                updateBossBar(player, newHealth, "Container");
+
                 if (adjacentChest != null) {
                     String adjacentLocKey = locationKey(adjacentChest.getLocation());
                     blockHealth.put(adjacentLocKey, newHealth);
@@ -579,12 +600,59 @@ public class BlockHealthListener implements Listener {
 
         if (newHealth > 0) {
             blockHealth.put(locKey, newHealth);
-            // Update other related mappings as necessary
             lastPlayerToLowerHealth.put(locKey, player.getUniqueId());
             blockBreakTimes.put(locKey, System.currentTimeMillis());
-            player.sendMessage(String.format("[§9§lCSR§r§f] Container now has §a%.2f%%§r health left.", newHealth));
+
+            String message = String.format("[§9§lCSR§r§f] Container now has §a%.2f%%§r health left.", newHealth);
+            notifyPlayer(player, newHealth, message);
         } else {
             removeBlockProtectionData(locKey);
+        }
+    }
+
+
+    private void updateBossBar(Player player, double health, String title) {
+        // This method should be called only if the notification type is BOSS_BAR
+        if (getNotificationPreference(player) != NotificationType.BOSS_BAR) {
+            return; // Exit if the player prefers chat notifications
+        }
+
+        BossBar bossBar = playerBossBars.get(player.getUniqueId());
+        if (bossBar == null) {
+            bossBar = Bukkit.createBossBar(title, BarColor.RED, BarStyle.SOLID);
+            bossBar.addPlayer(player);
+            playerBossBars.put(player.getUniqueId(), bossBar);
+        }
+
+        bossBar.setProgress(Math.max(0, Math.min(1, health / 100.0))); // Ensure progress is between 0 and 1
+        bossBar.setColor(getBarColor(health));
+        bossBar.setTitle(title);
+
+        // Schedule the boss bar to be removed after 25 seconds
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                removeBossBar(player);
+            }
+        }.runTaskLater(plugin, 25 * 20L); // 25 seconds * 20 ticks/second
+    }
+
+    private void removeBossBar(Player player) {
+        BossBar bossBar = playerBossBars.remove(player.getUniqueId());
+        if (bossBar != null) {
+            bossBar.removeAll();
+        }
+    }
+
+    private BarColor getBarColor(double health) {
+        if (health > 80) {
+            return BarColor.GREEN; // Healthy
+        } else if (health < 60) {
+            return BarColor.YELLOW; // Moderate
+        } else if (health < 40) {
+            return BarColor.RED; // Critical
+        } else {
+            return BarColor.GREEN; // Random
         }
     }
 
@@ -758,4 +826,29 @@ public class BlockHealthListener implements Listener {
             player.sendMessage("[§9§lCSR§r§c§lA§r§f] Admin mode enabled.");
         }
     }
+
+    public void setNotificationPreference(Player player, NotificationType type) {
+        playerNotificationPreferences.put(player.getUniqueId(), type);
+    }
+
+    public NotificationType getNotificationPreference(Player player) {
+        return playerNotificationPreferences.getOrDefault(player.getUniqueId(), NotificationType.BOSS_BAR);
+    }
+
+    public void toggleNotificationPreference(Player player) {
+        NotificationType current = getNotificationPreference(player);
+        NotificationType newType = (current == NotificationType.CHAT) ? NotificationType.BOSS_BAR : NotificationType.CHAT;
+        setNotificationPreference(player, newType);
+    }
+
+    private void notifyPlayer(Player player, double health, String message) {
+        NotificationType notificationType = getNotificationPreference(player);
+
+        if (notificationType == NotificationType.BOSS_BAR) {
+            updateBossBar(player, health, message);
+        } else {
+            player.sendMessage(message);
+        }
+    }
+
 }
