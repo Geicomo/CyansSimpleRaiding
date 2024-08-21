@@ -1,6 +1,7 @@
 package cyansraiding.cyanssimpleraiding;
 
 import org.bukkit.plugin.java.JavaPlugin;
+
 public final class CyansSimpleRaiding extends JavaPlugin {
 
     // Assume your BlockHealthListener class is here
@@ -12,10 +13,11 @@ public final class CyansSimpleRaiding extends JavaPlugin {
         blockHealthListener.loadBlockData();
         getServer().getPluginManager().registerEvents(blockHealthListener, this);
 
-
+        // Register command executors
         this.getCommand("csradmin").setExecutor(new CsrAdminCommand(blockHealthListener));
-        getCommand("csr").setExecutor(new CsrCommands(blockHealthListener));
+        this.getCommand("csr").setExecutor(new CsrCommands(blockHealthListener, this));  // Pass both BlockHealthListener and JavaPlugin instance
 
+        // Update checker logic
         new UpdateChecker(this, 118344).getVersion(latestVersion -> {
             String currentVersion = this.getDescription().getVersion();
             if (currentVersion.equals(latestVersion)) {
@@ -25,9 +27,7 @@ public final class CyansSimpleRaiding extends JavaPlugin {
             }
         });
 
-
-
-        getLogger().info("CSR Enabled");
+        getLogger().info("Cyans Simple Raiding Enabled");
     }
 
     @Override
@@ -35,6 +35,6 @@ public final class CyansSimpleRaiding extends JavaPlugin {
         // Save your data
         blockHealthListener.saveBlockData();
 
-        getLogger().info("CSR Shutting down...");
+        getLogger().info("Cyans Simple Raiding Shutting down...");
     }
 }

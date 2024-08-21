@@ -53,7 +53,7 @@ public class BlockHealthListener implements Listener {
         this.plugin = plugin;
     }
 
-    private String locationKey(Location location) {
+    public String locationKey(Location location) {
         return Objects.requireNonNull(location.getWorld()).getName() + "," + location.getBlockX() + "," + location.getBlockY() + "," + location.getBlockZ();
     }
 
@@ -509,17 +509,10 @@ public class BlockHealthListener implements Listener {
             }
 
             if (newHealth <= 0) {
-                // Break Block
-                blockHealth.remove(locKey);
-                removeBossBar(player);
-
-                if (adjacentChest != null) {
-                    // Handle the adjacent part of the double chest similarly
-                    dropItemsAndBlock(adjacentChest.getLocation(), adjacentChest.getInventory());
-                    blockHealth.remove(locationKey(adjacentChest.getLocation()));
-                    adjacentChest.getBlock().setType(Material.AIR);
-                }
-                removeBlockProtectionData(locKey);
+                // Abandon the chest instead of breaking it
+                abandonChest(locKey);
+                player.sendMessage("[§9§lCSR§r§f] This container is now public.");
+                event.setCancelled(true); // Prevent the block from being broken
             } else {
                 // Update Health and Block
                 blockHealth.put(locKey, newHealth);
@@ -536,7 +529,6 @@ public class BlockHealthListener implements Listener {
 
                 event.setCancelled(true); // Prevent default breaking
             }
-            return;
         }
 
         if (block.getState() instanceof Container) {
@@ -568,10 +560,21 @@ public class BlockHealthListener implements Listener {
 
                     event.setCancelled(true);
                 } else {
-                    removeBlockProtectionData(locKey);
+                    abandonChest(locKey);
+                    player.sendMessage("[§9§lCSR§r§f] This container is now public.");
+                    event.setCancelled(true); // Prevent the block from being broken
                 }
             }
         }
+    }
+
+    // Method to abandon the chest by removing its ownership and protection
+    private void abandonChest(String locKey) {
+        blockHealth.remove(locKey);
+        blockOwners.remove(locKey);
+        lastPlayerToLowerHealth.remove(locKey);
+        lastPlayerToOpen.remove(locKey);
+        blockBreakTimes.remove(locKey);
     }
 
     private void dropItemsAndBlock(Location location, Inventory inventory) {
@@ -756,10 +759,12 @@ public class BlockHealthListener implements Listener {
             case ENDER_EYE:
             case BOOK:
                 return 4.0;
+            case BOOKSHELF:
+                return 5.0;
             case LEATHER:
                 return 1.0;
             default:
-                return 0.0;
+                return 0.1;
         }
     }
 
@@ -849,6 +854,18 @@ public class BlockHealthListener implements Listener {
         } else {
             player.sendMessage(message);
         }
+    }
+
+    public UUID getBlockOwner(String locKey) {
+        return blockOwners.get(locKey);
+    }
+
+    public void unclaimBlock(String locKey) {
+        blockOwners.remove(locKey);
+        blockHealth.remove(locKey);
+        lastPlayerToLowerHealth.remove(locKey);
+        lastPlayerToOpen.remove(locKey);
+        blockBreakTimes.remove(locKey);
     }
 
 }
