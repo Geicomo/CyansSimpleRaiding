@@ -16,6 +16,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
+// Commands
+
 public class CsrCommands implements CommandExecutor, Listener {
 
     private final BlockHealthListener blockHealthListener;

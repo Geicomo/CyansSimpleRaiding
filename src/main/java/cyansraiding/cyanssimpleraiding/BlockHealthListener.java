@@ -304,7 +304,7 @@ public class BlockHealthListener implements Listener {
         return null;
     }
 
-// Check if the block is a container or on raid cooldown
+// Check if the block is a container or on raid cooldown.
 
     @EventHandler
     public void onInventoryOpen(InventoryOpenEvent event) {
