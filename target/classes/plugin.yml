@@ -2,6 +2,8 @@ name: CyansSimpleRaiding
 version: '1.1.0'
 main: cyansraiding.cyanssimpleraiding.CyansSimpleRaiding
 api-version: '1.20'
+author: HillsOfCyan
+Description: A simple raiding plugin that adds container health/protection based on resources inside.
 
 commands:
   csr:

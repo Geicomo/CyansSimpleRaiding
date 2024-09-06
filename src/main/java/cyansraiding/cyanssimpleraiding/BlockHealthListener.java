@@ -34,6 +34,8 @@ import org.bukkit.boss.BossBar;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 
+// Hash maps to store functions
+
 @SuppressWarnings("ALL")
 public class BlockHealthListener implements Listener {
     private final Map<String, Double> blockHealth = new HashMap<>();
@@ -48,6 +50,8 @@ public class BlockHealthListener implements Listener {
     private final Map<UUID, BossBar> playerBossBars = new HashMap<>();
     private final Map<UUID, NotificationType> playerNotificationPreferences = new HashMap<>();
     private File dataFolder;
+
+// Block environmental damage logic
 
     public BlockHealthListener(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -87,6 +91,8 @@ public class BlockHealthListener implements Listener {
         CHAT,
         BOSS_BAR
     }
+
+// Saving container location, health, trusted, etc. logic
 
     public void setDataFolder(File dataFolder) {
         this.dataFolder = dataFolder;
@@ -244,6 +250,8 @@ public class BlockHealthListener implements Listener {
         }
     }
 
+// Block placing logic to write health and owners.
+
     @EventHandler
     public void onBlockPlace(BlockPlaceEvent event) {
         Block block = event.getBlockPlaced();
@@ -295,6 +303,8 @@ public class BlockHealthListener implements Listener {
         }
         return null;
     }
+
+// Check if the block is a container or on raid cooldown
 
     @EventHandler
     public void onInventoryOpen(InventoryOpenEvent event) {
@@ -377,6 +387,8 @@ public class BlockHealthListener implements Listener {
         }
     }
 
+// Handle contentsBefore and after and update health based on any new items
+
     @EventHandler
     public void onInventoryClose(InventoryCloseEvent event) {
         if (!(event.getPlayer() instanceof Player)) return;
@@ -447,6 +459,8 @@ public class BlockHealthListener implements Listener {
         return healthIncrease;
     }
 
+// Hopper protection for owner logic
+
     @EventHandler
     public void onInventoryMoveItem(InventoryMoveItemEvent event) {
         InventoryHolder sourceHolder = event.getSource().getHolder();
@@ -475,6 +489,8 @@ public class BlockHealthListener implements Listener {
             event.setCancelled(true);
         }
     }
+
+// Handle block breaking logic like if it is being raided, or if it is the owners then break automatically
 
     @EventHandler
     public void onBlockBreak(BlockBreakEvent event) {
@@ -577,26 +593,7 @@ public class BlockHealthListener implements Listener {
         blockBreakTimes.remove(locKey);
     }
 
-    private void dropItemsAndBlock(Location location, Inventory inventory) {
-        World world = location.getWorld();
-        if (world == null) return; // Just in case
-
-        // Drop items from the inventory first
-        for (ItemStack item : inventory.getContents()) {
-            if (item != null && item.getType() != Material.AIR) {
-                world.dropItemNaturally(location, item);
-            }
-        }
-        inventory.clear(); // Clear inventory after dropping items
-
-        // Now, drop the chest block itself
-        dropChestBlock(location, world);
-    }
-
-    private void dropChestBlock(Location location, World world) {
-        // Assuming you're working with generic chests. Adjust if you're using trapped chests, etc.
-        world.dropItemNaturally(location, new ItemStack(Material.CHEST, 1));
-    }
+// Reduce health by 20% every time it is broken
 
     private void handleBlockHealthReduction(String locKey, Player player, double currentHealth) {
         double newHealth = currentHealth - 20; // Adjust as needed
@@ -613,6 +610,15 @@ public class BlockHealthListener implements Listener {
         }
     }
 
+    private void removeBlockProtectionData(String locKey) {
+        blockHealth.remove(locKey);
+        blockOwners.remove(locKey);
+        lastPlayerToLowerHealth.remove(locKey);
+        lastPlayerToOpen.remove(locKey);
+        blockBreakTimes.remove(locKey);
+    }
+
+// Handle logic to show boss bar and remove it
 
     private void updateBossBar(Player player, double health, String title) {
         // This method should be called only if the notification type is BOSS_BAR
@@ -659,13 +665,7 @@ public class BlockHealthListener implements Listener {
         }
     }
 
-    private void removeBlockProtectionData(String locKey) {
-        blockHealth.remove(locKey);
-        blockOwners.remove(locKey);
-        lastPlayerToLowerHealth.remove(locKey);
-        lastPlayerToOpen.remove(locKey);
-        blockBreakTimes.remove(locKey);
-    }
+// Everything that handels how much a item should add health wise
 
     private double getIncreaseModifier(Material material) {
         switch (material) {
@@ -768,6 +768,8 @@ public class BlockHealthListener implements Listener {
         }
     }
 
+// Logic to handle showing info when right clcking a container
+
     @EventHandler
     public void onPlayerInteractWithChest(PlayerInteractEvent event) {
         if (event.getAction() != Action.RIGHT_CLICK_BLOCK || event.getHand() != EquipmentSlot.HAND) return;
@@ -796,6 +798,8 @@ public class BlockHealthListener implements Listener {
         player.sendMessage("§lLast Player to Break:§r " + lastDamageCauserName);
         player.sendMessage("§lLast Player to Open:§r " + lastOpenName);
     }
+
+// Logic to handle adding and removing trusted players
 
     public boolean addPlayerToGlobalTrustList(Player owner, UUID trustedPlayerUUID) {
         UUID ownerId = owner.getUniqueId();
